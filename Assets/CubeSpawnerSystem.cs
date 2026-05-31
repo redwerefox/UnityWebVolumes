@@ -3,27 +3,65 @@ using Unity.Transforms;
 using Unity.Mathematics;
 using Unity.Physics;
 using Unity.Rendering;
+using System.Linq;
+using UnityEngine.TestTools;
+
+
 
 // We use 'partial' so the Burst compiler can generate optimized code for us.
 public partial struct CubeSpawnerSystem : ISystem
 {
-    public void OnCreate(ref SystemState state) { }
+
+    bool hasSpawned;
+
+    public void OnCreate(ref SystemState state) { hasSpawned = false; }
+
+
+    private float3 PositionInsideBoxContainer(in float norm_x, in float norm_y, in float norm_z, BoxContainer container)
+    {
+        return container.worldPosition + new float3(
+            (norm_x - 0.5f) * container.width,
+            (norm_y - 0.5f) * container.height,
+            (norm_z - 0.5f) * container.depth
+        );
+    }
+
+    private float3 FakeRandomRotations(in float3 position)
+    {
+        return math.sin(position * 0.1f) * 360f;
+    }
+
+    private float ScaleByContainerSizeAndAmount(BoxContainer container, int amount, float gapBetweenCubes)
+    {
+        if (gapBetweenCubes <= 0f)
+        {
+            //clamp for safety
+            gapBetweenCubes = 0.1f;
+        }
+        float containerVolume = container.width * container.height * container.depth;
+        float cubeVolume = containerVolume / amount;
+        return math.pow(cubeVolume * gapBetweenCubes, 1f / 3f);
+    }
 
     public void OnUpdate(ref SystemState state)
     {
+        if (hasSpawned)
+            return;
+
         //var ecbSystem = SystemAPI.GetSingleton<EndSimulationEntityCommandBufferSystem.Singleton>();
         var ecb = new EntityCommandBuffer(Unity.Collections.Allocator.Temp);
+        BoxContainer containerInfo = SystemAPI.GetSingleton<BoxContainer>();
 
         foreach (var spawner in SystemAPI.Query<RefRW<CubeSpawner>>())
         {
+
             int amount = spawner.ValueRO.Amount;
+            float gapBetweenCubes = spawner.ValueRO.GapBetweenCubes;
 
             int sideCount = (int)math.ceil(math.pow(amount, 1f / 3f));
             int spawnedCount = 0;
 
-            var prefabCollider =
-                state.EntityManager.GetComponentData<PhysicsCollider>(
-                    spawner.ValueRO.Prefab);
+            var prefabCollider = SystemAPI.GetComponent<PhysicsCollider>(spawner.ValueRO.Prefab);
 
             for (int x = 0; x < sideCount; x++)
             {
@@ -36,10 +74,17 @@ public partial struct CubeSpawnerSystem : ISystem
 
                         Entity instance = ecb.Instantiate(spawner.ValueRO.Prefab);
 
-                        float3 position = new float3(x, y, z) * 1.5f;
+                        float3 position = PositionInsideBoxContainer((float)x / sideCount, (float)y / sideCount, (float)z / sideCount, containerInfo);
+                        float3 rotation = FakeRandomRotations(position);
+                        float scale = ScaleByContainerSizeAndAmount(containerInfo, amount, gapBetweenCubes);
 
                         // SET transform instead of add
-                        ecb.SetComponent(instance, LocalTransform.FromPosition(position));
+                        ecb.SetComponent(instance,
+                        LocalTransform.FromPositionRotationScale(
+                            position,
+                            quaternion.EulerXYZ(math.radians(rotation)),
+                            scale)
+                        );
 
                         ecb.SetName(instance, new Unity.Collections.FixedString32Bytes("Spawned Cube"));
 
